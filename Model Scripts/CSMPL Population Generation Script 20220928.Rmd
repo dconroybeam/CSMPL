@@ -1,0 +1,541 @@
+---
+title: "CSMPI Population Generation Script 20220928"
+author: "Dan Conroy-Beam"
+date: "2022-09-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+
+
+
+######Packages######
+```{r}
+library(ggplot2)
+```
+
+
+
+
+
+
+######Parameters######
+```{r}
+
+#Group Size#
+#Determines the size of the subgroups agents will be sorted into
+gsize<-500
+
+
+
+#N groups#
+ngroups<-100
+
+
+
+#Population size#
+#Determines the starting and maximum population size of the model
+popsize<-gsize*ngroups
+
+
+
+
+#Preference Adjustment#
+#Controls how much agents adjust their preferences relative to traits
+adjhi<-.40
+adjlo<-.01
+
+
+
+#Human Data#
+#Load in the human data for parameterizing agents
+hdata<-read.csv(file="Human Data/Processed Data/CAREER1 PROCESSED Data 01172020 104258.csv")
+
+hdata<-hdata[,c(1,3:10,235:250,345:360)]
+
+hdata<-hdata[complete.cases(hdata[,c(10:41)]),]
+
+```
+
+
+
+
+
+
+######Functions#######
+
+```{r}
+#Agent generation#
+
+agentgenerate<-function(popsize,sex,data){
+  
+  #Generate agents with trait and preferences by resampling from the human data
+  agents<-apply(data[,c(10:41)],2,function(x) sample(x,popsize,replace=T))
+  
+  agents<-t(apply(agents,2,scale))
+  
+  #Create a copy of the human dataframe including just the required variables 
+  hdata1<-data[,c(10:41)]
+
+  #Calculates the correlation matrix for traits and preferences in the real data
+  hdata1cor<-cor(hdata1)
+  
+  #Computes the Cholesky decomposition of this matrix
+  #This will be used to impose a realistic covariance matrix on the simulated data
+  hdata1chol<-t(chol(hdata1cor))
+  
+  #Multiplies the scaled agent data by the Cholesky decomposition, which imposes approximately the correct covariance matrix
+  agents<-t(hdata1chol %*% agents)
+  
+  #Add the mean of each variable to the simulated data to re-center data
+  agents<-sapply(1:ncol(agents),function(x) (sd(hdata1[,x])*agents[,x])+mean(hdata1[,x]))
+  
+  #Truncate rated variables to the true minimum and maximum found in the human data
+  agents<-sapply(1:ncol(agents),function(x) ifelse(agents[,x]>max(hdata1[,x]),max(hdata1[,x]),agents[,x]))
+  agents<-sapply(1:ncol(agents),function(x) ifelse(agents[,x]<min(hdata1[,x]),min(hdata1[,x]),agents[,x]))
+  
+  #Names variables appropriately
+  colnames(agents)<-colnames(hdata1)
+  
+  #Set the agent's sex
+  sex<-sex
+  
+  return(as.data.frame(cbind(sex,agents)))
+}
+
+
+
+#Attraction calculation#
+mvcalc<-function(ideal,traits){
+  #ideal is ideal preferences
+  #traits is actual trait values
+
+  #Calculates the Euclidean distance between the agent's preferences and each mate's traits
+  #Transforms this distance such that positive values are more attractive by multiplying by -1 and adding 1 plus the maximum possible Euclidean distance
+  mv<-apply(traits,1,function(x) 10*(-1*(dist(rbind(ideal,x)))+sqrt(10^2*16))/sqrt(10^2*16))
+
+  
+  return(mv)
+  
+}
+
+
+
+#Preference Updating
+#A function to update preferences based on partner characteristics
+prefadj<-function(preferences,traits,adjhi,adjlo){
+  #Preferences are the preferences of the agent/participant
+  #Traits of the traits of their partner
+  #Adjhi is the percent adjustment if preferences are *higher* than partner traits
+  #Adjlo is the percent adjustment if preferences are *lower* than partner traits
+  
+  #Adjusts preferences back away from traits
+  preferences2<-as.numeric(ifelse(preferences>traits,(preferences-(preferences-traits)*adjhi),(preferences-(preferences-traits)*adjlo)))
+  
+  #Returns re-adjusted preferences
+  return(preferences2)
+}
+
+```
+
+
+
+
+
+
+######Model Start######
+```{r}
+######Model Start######
+
+
+###Agent Generation###
+
+#Genereate agents
+males<-agentgenerate(popsize/2,1,hdata[hdata$sex==1,])
+females<-agentgenerate(popsize/2,0,hdata[hdata$sex==0,])
+
+#Give each agent a unique PIN
+males$PIN<-sample(1:nrow(males),nrow(males),replace=F)
+females$PIN<-sample(nrow(males):(nrow(males)+nrow(females)),nrow(females),replace=F)
+
+#Assign each male and female to a random population subgroup
+males$group<-sample(rep(1:ngroups,gsize/2))
+females$group<-sample(rep(1:ngroups,gsize/2))
+
+
+#Compute average preferences and sex-typical preferences
+avPrefs<-colMeans(rbind(males[,2:17],females[,2:17]))
+fPrefs<-colMeans(females[,2:17])
+mPrefs<-colMeans(males[,2:17])
+
+
+#Blank dataframes for storing couples paired by different models of mate choice
+
+#First generate one dataframe
+popPairs<-matrix(,1,(ncol(males)+ncol(females)))
+
+#Name the pairs dataframe for cbinding
+colnames(popPairs)<-c(colnames(females),colnames(males))
+
+#Generate each model-specific dataframe by copying from this larger dataframe
+avPairs<-popPairs
+sexPairs<-popPairs
+indPairs<-popPairs
+updPairs<-popPairs
+
+
+
+###Mate Choice###
+
+for(r in 1:ngroups){
+  
+  malesg<-males[males$group==r,]
+  femalesg<-females[females$group==r,]
+  
+  
+  #Mate Value Calculation#
+  
+  #Males
+  #Calculate how attracted each male is to each female according to consensual preferences, sex-typical preferences, or individual-level preferences
+  
+  avMaleAttMatrix<-t(apply(malesg,1,function(q) mvcalc(avPrefs,femalesg[,c(18:33)])))
+  
+  colnames(avMaleAttMatrix)<-femalesg$PIN
+  rownames(avMaleAttMatrix)<-malesg$PIN
+  
+  sexMaleAttMatrix<-t(apply(malesg,1,function(q) mvcalc(mPrefs,femalesg[,c(18:33)])))
+  
+  colnames(sexMaleAttMatrix)<-femalesg$PIN
+  rownames(sexMaleAttMatrix)<-malesg$PIN
+  
+  indMaleAttMatrix<-t(apply(malesg,1,function(q) mvcalc(q[2:17],femalesg[,c(18:33)])))
+  
+  colnames(indMaleAttMatrix)<-femalesg$PIN
+  rownames(indMaleAttMatrix)<-malesg$PIN
+  
+  
+  #Females
+  #Calculate how attracted each female is to each male according to consensual preferences, sex-typical preferences, or individual-level preferences
+  
+  avFemaleAttMatrix<-t(apply(femalesg,1,function(q) mvcalc(avPrefs,malesg[,c(18:33)])))
+  
+  colnames(avFemaleAttMatrix)<-malesg$PIN
+  rownames(avFemaleAttMatrix)<-femalesg$PIN
+  
+  sexFemaleAttMatrix<-t(apply(femalesg,1,function(q) mvcalc(mPrefs,malesg[,c(18:33)])))
+  
+  colnames(sexFemaleAttMatrix)<-malesg$PIN
+  rownames(sexFemaleAttMatrix)<-femalesg$PIN
+  
+  indFemaleAttMatrix<-t(apply(femalesg,1,function(q) mvcalc(q[2:17],malesg[,c(18:33)])))
+  
+  colnames(indFemaleAttMatrix)<-malesg$PIN
+  rownames(indFemaleAttMatrix)<-femalesg$PIN
+  
+  
+  
+  
+  
+  ###Mate Choice###
+  
+  #Consensual Preferences#
+  
+  #A blank dataframe for storing the paired couples
+  avGpairs<-matrix(,1,(ncol(malesg)+ncol(femalesg)))
+  avGpairs<-as.data.frame(avGpairs)
+  
+  #Name the avGpairs dataframe for cbinding
+  colnames(avGpairs)<-c(colnames(femalesg),colnames(malesg))
+  
+  #A matrix for storing how much investment each agent sends to each potential mate
+  #Start with how attracted each agent is to each potential mate
+  maleInvestPropS<-avMaleAttMatrix
+  femaleInvestPropS<-avFemaleAttMatrix
+  
+  maleInvestPropS<-t(apply(maleInvestPropS,1,function(x) x*(10/sum(x))))
+  femaleInvestPropS<-t(apply(femaleInvestPropS,1,function(x) x*(10/sum(x))))
+  
+  #Loop through 100 timesteps for courtship
+  for(c in 1:100){
+    #How much investment each male agent received from each female agent in the previous timestep
+    maleInvestPropR<-t(femaleInvestPropS)
+    
+    #How much investment each female agent received from each male agent in the previous timestep
+    femaleInvestPropR<-t(maleInvestPropS)
+    
+    #Calculate how much investment each agent will send in this round.
+    #Investment after the first round is proportional to the mutual investment in the previous round
+    maleInvestPropS<-maleInvestPropS*maleInvestPropR
+    femaleInvestPropS<-femaleInvestPropS*femaleInvestPropR
+    
+    maleInvestPropS<-t(apply(maleInvestPropS,1,function(x) x*(10/sum(x))))
+    femaleInvestPropS<-t(apply(femaleInvestPropS,1,function(x) x*(10/sum(x))))
+    
+    #Some models can produce NaNs. This just converts these to 0
+    maleInvestPropS[is.nan(maleInvestPropS)]<-0
+    femaleInvestPropS[is.nan(femaleInvestPropS)]<-0
+  }
+  
+  #Determine which female each male has chosen
+  #Break ties randomly
+  mchoice<-data.frame("male"=1:nrow(malesg))
+  mchoice$choice<-apply(maleInvestPropS,1,function(x) which.max(x))
+  
+  #Determine which male each female has chosen
+  #Break ties randomly
+  fchoice<-data.frame("female"=1:nrow(femalesg))
+  fchoice$choice<-apply(femaleInvestPropS,1,function(x) which.max(x))
+  
+  #Loop through females' choices
+  for(p in 1:nrow(fchoice)){
+    #Determine the male chosen by the current focal female
+    chosenmale<-fchoice$choice[p]
+    
+    #Determine the female chosen by the focal female's choice
+    chosenfemale<-mchoice$choice[chosenmale]
+    
+    #If the chosen female is the focal female...
+    if(chosenfemale==p){
+      #Pair the male and female together
+      avGpairs<-rbind(avGpairs,cbind(femalesg[p,],malesg[chosenmale,]))
+    }
+    
+    #Otherwise do nothing
+    
+  }
+  
+  #Remove the row of NAs from the avGpairs dataframe
+  avGpairs<-avGpairs[-1,]
+  
+  
+  
+  #Sex-Typical Preferences#
+  
+  #A blank dataframe for storing the paired couples
+  sexGpairs<-matrix(,1,(ncol(malesg)+ncol(femalesg)))
+  sexGpairs<-as.data.frame(sexGpairs)
+  
+  #Name the sexGpairs dataframe for cbinding
+  colnames(sexGpairs)<-c(colnames(femalesg),colnames(malesg))
+  
+  #A matrix for storing how much investment each agent sends to each potential mate
+  #Start with how attracted each agent is to each potential mate
+  maleInvestPropS<-sexMaleAttMatrix
+  femaleInvestPropS<-sexFemaleAttMatrix
+  
+  maleInvestPropS<-t(apply(maleInvestPropS,1,function(x) x*(10/sum(x))))
+  femaleInvestPropS<-t(apply(femaleInvestPropS,1,function(x) x*(10/sum(x))))
+  
+  #Loop through 100 timesteps for courtship
+  for(c in 1:100){
+    #How much investment each male agent received from each female agent in the previous timestep
+    maleInvestPropR<-t(femaleInvestPropS)
+    
+    #How much investment each female agent received from each male agent in the previous timestep
+    femaleInvestPropR<-t(maleInvestPropS)
+    
+    #Calculate how much investment each agent will send in this round.
+    #Investment after the first round is proportional to the mutual investment in the previous round
+    maleInvestPropS<-maleInvestPropS*maleInvestPropR
+    femaleInvestPropS<-femaleInvestPropS*femaleInvestPropR
+    
+    maleInvestPropS<-t(apply(maleInvestPropS,1,function(x) x*(10/sum(x))))
+    femaleInvestPropS<-t(apply(femaleInvestPropS,1,function(x) x*(10/sum(x))))
+    
+    #Some models can produce NaNs. This just converts these to 0
+    maleInvestPropS[is.nan(maleInvestPropS)]<-0
+    femaleInvestPropS[is.nan(femaleInvestPropS)]<-0
+  }
+  
+  #Determine which female each male has chosen
+  #Break ties randomly
+  mchoice<-data.frame("male"=1:nrow(malesg))
+  mchoice$choice<-apply(maleInvestPropS,1,function(x) which.max(x))
+  
+  #Determine which male each female has chosen
+  #Break ties randomly
+  fchoice<-data.frame("female"=1:nrow(femalesg))
+  fchoice$choice<-apply(femaleInvestPropS,1,function(x) which.max(x))
+  
+  #Loop through females' choices
+  for(p in 1:nrow(fchoice)){
+    #Determine the male chosen by the current focal female
+    chosenmale<-fchoice$choice[p]
+    
+    #Determine the female chosen by the focal female's choice
+    chosenfemale<-mchoice$choice[chosenmale]
+    
+    #If the chosen female is the focal female...
+    if(chosenfemale==p){
+      #Pair the male and female together
+      sexGpairs<-rbind(sexGpairs,cbind(femalesg[p,],malesg[chosenmale,]))
+    }
+    
+    #Otherwise do nothing
+    
+  }
+  
+  #Remove the row of NAs from the sexGpairs dataframe
+  sexGpairs<-sexGpairs[-1,]
+  
+  
+  
+  #Individual Preferences#
+  
+  #A blank dataframe for storing the paired couples
+  indGpairs<-matrix(,1,(ncol(malesg)+ncol(femalesg)))
+  indGpairs<-as.data.frame(indGpairs)
+  
+  #Name the indGpairs dataframe for cbinding
+  colnames(indGpairs)<-c(colnames(femalesg),colnames(malesg))
+  
+  #A matrix for storing how much investment each agent sends to each potential mate
+  #Start with how attracted each agent is to each potential mate
+  maleInvestPropS<-indMaleAttMatrix
+  femaleInvestPropS<-indFemaleAttMatrix
+  
+  maleInvestPropS<-t(apply(maleInvestPropS,1,function(x) x*(10/sum(x))))
+  femaleInvestPropS<-t(apply(femaleInvestPropS,1,function(x) x*(10/sum(x))))
+  
+  #Loop through 100 timesteps for courtship
+  for(c in 1:100){
+    #How much investment each male agent received from each female agent in the previous timestep
+    maleInvestPropR<-t(femaleInvestPropS)
+    
+    #How much investment each female agent received from each male agent in the previous timestep
+    femaleInvestPropR<-t(maleInvestPropS)
+    
+    #Calculate how much investment each agent will send in this round.
+    #Investment after the first round is proportional to the mutual investment in the previous round
+    maleInvestPropS<-maleInvestPropS*maleInvestPropR
+    femaleInvestPropS<-femaleInvestPropS*femaleInvestPropR
+    
+    maleInvestPropS<-t(apply(maleInvestPropS,1,function(x) x*(10/sum(x))))
+    femaleInvestPropS<-t(apply(femaleInvestPropS,1,function(x) x*(10/sum(x))))
+    
+    #Some models can produce NaNs. This just converts these to 0
+    maleInvestPropS[is.nan(maleInvestPropS)]<-0
+    femaleInvestPropS[is.nan(femaleInvestPropS)]<-0
+  }
+  
+  #Determine which female each male has chosen
+  #Break ties randomly
+  mchoice<-data.frame("male"=1:nrow(malesg))
+  mchoice$choice<-apply(maleInvestPropS,1,function(x) which.max(x))
+  
+  #Determine which male each female has chosen
+  #Break ties randomly
+  fchoice<-data.frame("female"=1:nrow(femalesg))
+  fchoice$choice<-apply(femaleInvestPropS,1,function(x) which.max(x))
+  
+  #Loop through females' choices
+  for(p in 1:nrow(fchoice)){
+    #Determine the male chosen by the current focal female
+    chosenmale<-fchoice$choice[p]
+    
+    #Determine the female chosen by the focal female's choice
+    chosenfemale<-mchoice$choice[chosenmale]
+    
+    #If the chosen female is the focal female...
+    if(chosenfemale==p){
+      #Pair the male and female together
+      indGpairs<-rbind(indGpairs,cbind(femalesg[p,],malesg[chosenmale,]))
+    }
+    
+    #Otherwise do nothing
+    
+  }
+  
+  #Remove the row of NAs from the indGpairs dataframe
+  indGpairs<-indGpairs[-1,]
+  
+  
+  
+  #Preference Updating#
+  #Create the update model based on the consensual preference population
+  updGpairs<-avGpairs
+  
+  #Update female preferences to be closer to male partners
+  updGpairs[,2:17]<-t(apply(updGpairs,1,function(x) prefadj(x[2:17],x[53:68],adjhi,adjlo)))
+  
+  #Update male preferences to be closer to female partners
+  updGpairs[,37:52]<-t(apply(updGpairs,1,function(x) prefadj(x[37:52],x[18:33],adjhi,adjlo)))
+
+  
+  
+  #Rbind each group's couples into the population couples dataframes
+  avPairs<-rbind(avPairs,avGpairs)
+  sexPairs<-rbind(sexPairs,sexGpairs)
+  indPairs<-rbind(indPairs,indGpairs)
+  updPairs<-rbind(updPairs,updGpairs)
+
+}
+
+#Remove the unnecessary NAs from each pairs dataframe
+avPairs<-avPairs[-1,]
+sexPairs<-sexPairs[-1,]
+indPairs<-indPairs[-1,]
+updPairs<-updPairs[-1,]
+
+
+#Split each pairs dataframe into males and females
+avPairsF<-avPairs[,1:35]
+avPairsM<-avPairs[,36:70]
+
+sexPairsF<-sexPairs[,1:35]
+sexPairsM<-sexPairs[,36:70]
+
+indPairsF<-indPairs[,1:35]
+indPairsM<-indPairs[,36:70]
+
+updPairsF<-updPairs[,1:35]
+updPairsM<-updPairs[,36:70]
+
+
+#Store the PINs of each agents' mates
+avPairsF$mPIN<-avPairsM$PIN
+avPairsM$mPIN<-avPairsF$PIN
+
+sexPairsF$mPIN<-sexPairsM$PIN
+sexPairsM$mPIN<-sexPairsF$PIN
+
+indPairsF$mPIN<-indPairsM$PIN
+indPairsM$mPIN<-indPairsF$PIN
+
+updPairsF$mPIN<-updPairsM$PIN
+updPairsM$mPIN<-updPairsF$PIN
+
+#Store the integration model responsible for each couple
+avPairsF$model<-"av"
+avPairsM$model<-"av"
+
+sexPairsF$model<-"sex"
+sexPairsM$model<-"sex"
+
+indPairsF$model<-"ind"
+indPairsM$model<-"ind"
+
+updPairsF$model<-"upd"
+updPairsM$model<-"upd"
+
+
+
+#Put all the couple populations together into one dataframe
+data<-rbind(avPairsF,avPairsM,sexPairsF,sexPairsM,indPairsF,indPairsM,updPairsF,updPairsM)
+
+
+
+#Create a unique filename so the model can output results without overwriting old results.
+path<-"Model Outputs/Couple Populations/CSMPL Couple Population "
+
+format<-".csv"
+date<-format(Sys.time(),format="%m%d%Y %H%M%S")
+file<-file.path(paste0(path,date,format))
+
+write.csv(data,file=file,row.names=F)
+```
