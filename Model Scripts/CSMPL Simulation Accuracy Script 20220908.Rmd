@@ -52,10 +52,22 @@ samples<-1:34
 sizes<-300
 
 
+#Creating a file to save results (if necessary)
+mrpath<-"Model Outputs/Simulation Accuracy/CSMPL Simulation Accuracy Results.csv"
+
+if(file.exists(mrpath)==F){
+    mrepro<-data.frame("dt"=NA,"modelloop"=NA,"model"=NA,"n"=NA,"av"=NA,"sex"=NA,"ind"=NA)
+    
+    write.csv(mrepro,mrpath,row.names=F)
+
+}
+
 
 #Number of Cores#
 #Number of cores to use for the parallel loop
-clust<-makeCluster(detectCores()-1)
+# clust<-makeCluster(detectCores()-1)
+clust<-makeCluster(2)
+
 registerDoParallel(clust)
 
 
@@ -96,12 +108,14 @@ resample <- function(x,...){if(length(x)==1) x else sample(x,...)}
 ```{r}
 
 #Repeats the entire model for each of the sample sizes set by the parameter above
-foreach(s = samples) %dopar% {
+mrepro<-foreach(s = samples,.combine=rbind) %dopar% {
 
+  mrepro<-data.frame("dt"=NA,"modelloop"=s,"model"=rep(models,length(sizes)),"n"=rep(sizes,each=length(models)),"av"=0,"sex"=0,"ind"=0)
+
+  #Loop through sample sizes
   for(n in sizes){
     
-    mrepro<-data.frame("modelloop"=s,"model"=models,"n"=n,"av"=0,"sex"=0,"ind"=0)
-    
+    #Loop through models
     for(m in 1:length(models)){
     
       #######Draw Sample######
@@ -381,7 +395,7 @@ foreach(s = samples) %dopar% {
       
       
       
-      ######Calculating Couple Recreation Accuracy######
+      ######Calculating Couple Simulation Accuracy######
       #Determine the PINs of all guessed pairs
       avRels<-data.frame("females"=avPairs[,34],"males"=avPairs[,71])
       sexRels<-data.frame("females"=sexPairs[,34],"males"=sexPairs[,71])
@@ -404,32 +418,20 @@ foreach(s = samples) %dopar% {
       females$sexAcc<-ifelse(is.na(females$sexGuess)==F,females$sexGuess==females$mPIN,F)
       females$indAcc<-ifelse(is.na(females$indGuess)==F,females$indGuess==females$mPIN,F)
 
-      
-      #Do the same for males (the values will be the same)
-      males$avAcc<-ifelse(is.na(males$avGuess)==F,males$avGuess==males$mPIN,F)
-      males$sexAcc<-ifelse(is.na(males$sexGuess)==F,males$sexGuess==males$mPIN,F)
-      males$indAcc<-ifelse(is.na(males$indGuess)==F,males$indGuess==males$mPIN,F)
-
-      mrepro[m,4:6]<-colMeans(females[,41:43],na.rm=T)
+      #Save results to mrepro in the appropriate spot
+      mrepro[mrepro$model==models[m] & mrepro$n==n,5:7]<-colMeans(females[,41:43],na.rm=T)
+      mrepro$dt[mrepro$model==models[m] & mrepro$n==n]<-format(Sys.time(),format="%m%d%Y %H%M%S")
       
     }
-    
-    
-    #Create a unique filename so the model can output results without overwriting old results.
-    #Name format is "Euclidean Couple Population MonthDayYear HourMinuteSecond"
-    #This filepath will need to be made specific to your computer.
-    path<-"Model Outputs/Simulation Accuracy/CSMPL Simulation Accuracy N"
-    
-    format<-".csv"
-    date<-format(Sys.time(),format="%m%d%Y %H%M%S")
-    file<-file.path(paste0(path,n," ",s," ",date,format))
-    
-    write.csv(mrepro,file=file,row.names=F)
-    
+
   }
+  
+  #Output mrepro for storing by the foreach() loop
+  mrepro
 
 }
 
+write.table(mrepro,file=mrpath,append=T,sep=",",row.names=F,col.names=F)
 
 stopCluster(clust)
 
