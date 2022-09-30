@@ -1,5 +1,5 @@
 ---
-title: "CSMPI Population Generation Script 20220928"
+title: "CSMPL Population Generation Script 20220928"
 author: "Dan Conroy-Beam"
 date: "2022-09-28"
 output: html_document
@@ -155,7 +155,7 @@ prefadj<-function(preferences,traits,adjhi,adjlo){
 
 ###Agent Generation###
 
-#Genereate agents
+#Generate agents
 males<-agentgenerate(popsize/2,1,hdata[hdata$sex==1,])
 females<-agentgenerate(popsize/2,0,hdata[hdata$sex==0,])
 
@@ -244,6 +244,7 @@ for(r in 1:ngroups){
   ###Mate Choice###
   
   #Consensual Preferences#
+  #Mate choice follows Gale-Shapley Algorithm because RAM requires unique mutual interest between agents
   
   #A blank dataframe for storing the paired couples
   avGpairs<-matrix(,1,(ncol(malesg)+ncol(femalesg)))
@@ -251,62 +252,74 @@ for(r in 1:ngroups){
   
   #Name the avGpairs dataframe for cbinding
   colnames(avGpairs)<-c(colnames(femalesg),colnames(malesg))
-  
-  #A matrix for storing how much investment each agent sends to each potential mate
-  #Start with how attracted each agent is to each potential mate
-  maleInvestPropS<-avMaleAttMatrix
-  femaleInvestPropS<-avFemaleAttMatrix
-  
-  maleInvestPropS<-t(apply(maleInvestPropS,1,function(x) x*(10/sum(x))))
-  femaleInvestPropS<-t(apply(femaleInvestPropS,1,function(x) x*(10/sum(x))))
-  
-  #Loop through 100 timesteps for courtship
-  for(c in 1:100){
-    #How much investment each male agent received from each female agent in the previous timestep
-    maleInvestPropR<-t(femaleInvestPropS)
-    
-    #How much investment each female agent received from each male agent in the previous timestep
-    femaleInvestPropR<-t(maleInvestPropS)
-    
-    #Calculate how much investment each agent will send in this round.
-    #Investment after the first round is proportional to the mutual investment in the previous round
-    maleInvestPropS<-maleInvestPropS*maleInvestPropR
-    femaleInvestPropS<-femaleInvestPropS*femaleInvestPropR
-    
-    maleInvestPropS<-t(apply(maleInvestPropS,1,function(x) x*(10/sum(x))))
-    femaleInvestPropS<-t(apply(femaleInvestPropS,1,function(x) x*(10/sum(x))))
-    
-    #Some models can produce NaNs. This just converts these to 0
-    maleInvestPropS[is.nan(maleInvestPropS)]<-0
-    femaleInvestPropS[is.nan(femaleInvestPropS)]<-0
-  }
-  
-  #Determine which female each male has chosen
-  #Break ties randomly
-  mchoice<-data.frame("male"=1:nrow(malesg))
-  mchoice$choice<-apply(maleInvestPropS,1,function(x) which.max(x))
-  
-  #Determine which male each female has chosen
-  #Break ties randomly
-  fchoice<-data.frame("female"=1:nrow(femalesg))
-  fchoice$choice<-apply(femaleInvestPropS,1,function(x) which.max(x))
-  
-  #Loop through females' choices
-  for(p in 1:nrow(fchoice)){
-    #Determine the male chosen by the current focal female
-    chosenmale<-fchoice$choice[p]
-    
-    #Determine the female chosen by the focal female's choice
-    chosenfemale<-mchoice$choice[chosenmale]
-    
-    #If the chosen female is the focal female...
-    if(chosenfemale==p){
-      #Pair the male and female together
-      avGpairs<-rbind(avGpairs,cbind(femalesg[p,],malesg[chosenmale,]))
+
+  #A vector of male agents' partners
+  mPartner<-matrix(0,nrow(malesg),1)
+
+  #A vector of female agents' partners
+  fPartner<-matrix(0,nrow(femalesg),1)
+
+  #A matrix of females have already rejected each male
+  mRejected<-matrix(0,nrow(malesg),nrow(femalesg))
+
+  #Loops as long as some male is still unpaired
+  while(sum(mPartner==0,na.rm=T)>0){
+
+    #Selects the first unpaired male
+    focalMale<-which(mPartner==0)[1]
+
+    #Pulls out his attractions
+    focalMaleAtts<-avMaleAttMatrix[focalMale,]
+
+    #Determines which females have already rejected him
+    focalMaleRejections<-mRejected[focalMale,]
+
+    #If there is still a female left who has not rejected the focal male...
+    if(sum(focalMaleRejections)<nrow(femalesg)){
+
+      #Sets the attractiveness of each female who has rejected the focal male to 0
+      focalMaleAtts[focalMaleRejections==1]<-0
+
+      #Determines which of the remaining females he is most attracted to
+      femaleChosen<-which(focalMaleAtts==max(focalMaleAtts))[1]
+
+      #If she is single...
+      if(fPartner[femaleChosen]==0){
+        #She provisionally pairs with him
+        fPartner[femaleChosen]<-focalMale
+
+        #And he provisionally pairs with her
+        mPartner[focalMale]<-femaleChosen
+
+        #If the chosen female is not single, she compares the attractiveness of the focal male to her current partner...
+      } else if(avFemaleAttMatrix[femaleChosen,focalMale]>avFemaleAttMatrix[femaleChosen,fPartner[femaleChosen]]){
+        #If the focal male is more attractive to the chosen female than her current partner...
+
+        #The chosen female rejects her current partner
+        mRejected[fPartner[femaleChosen],femaleChosen]<-1
+
+        #And he becomes single
+        mPartner[fPartner[femaleChosen]]<-0
+
+        #And the focal male and the chosen female provisionally pair
+        mPartner[focalMale]<-femaleChosen
+        fPartner[femaleChosen]<-focalMale
+      } else{
+        #If the focal male is not more attractive to the chosen female than her current partner, the chosen female rejects the focal male
+        mRejected[focalMale,femaleChosen]<-1
+      }
+    } else{
+      #If there is no female who has yet to reject the male, have him abandon search
+      mPartner[focalMale]<-NA
     }
-    
-    #Otherwise do nothing
-    
+  }
+
+  mPartner<-mPartner[is.na(mPartner)==F]
+
+  #Loop through malesg' choices
+  for(p in 1:length(mPartner)){
+    #Pair each male with his chosen female
+    avGpairs<-rbind(avGpairs,cbind(femalesg[mPartner[p],],malesg[p,]))
   }
   
   #Remove the row of NAs from the avGpairs dataframe
@@ -315,69 +328,82 @@ for(r in 1:ngroups){
   
   
   #Sex-Typical Preferences#
-  
+  #Mate choice follows Gale-Shapley Algorithm because RAM requires unique mutual interest between agents
+
   #A blank dataframe for storing the paired couples
   sexGpairs<-matrix(,1,(ncol(malesg)+ncol(femalesg)))
   sexGpairs<-as.data.frame(sexGpairs)
   
   #Name the sexGpairs dataframe for cbinding
   colnames(sexGpairs)<-c(colnames(femalesg),colnames(malesg))
-  
-  #A matrix for storing how much investment each agent sends to each potential mate
-  #Start with how attracted each agent is to each potential mate
-  maleInvestPropS<-sexMaleAttMatrix
-  femaleInvestPropS<-sexFemaleAttMatrix
-  
-  maleInvestPropS<-t(apply(maleInvestPropS,1,function(x) x*(10/sum(x))))
-  femaleInvestPropS<-t(apply(femaleInvestPropS,1,function(x) x*(10/sum(x))))
-  
-  #Loop through 100 timesteps for courtship
-  for(c in 1:100){
-    #How much investment each male agent received from each female agent in the previous timestep
-    maleInvestPropR<-t(femaleInvestPropS)
-    
-    #How much investment each female agent received from each male agent in the previous timestep
-    femaleInvestPropR<-t(maleInvestPropS)
-    
-    #Calculate how much investment each agent will send in this round.
-    #Investment after the first round is proportional to the mutual investment in the previous round
-    maleInvestPropS<-maleInvestPropS*maleInvestPropR
-    femaleInvestPropS<-femaleInvestPropS*femaleInvestPropR
-    
-    maleInvestPropS<-t(apply(maleInvestPropS,1,function(x) x*(10/sum(x))))
-    femaleInvestPropS<-t(apply(femaleInvestPropS,1,function(x) x*(10/sum(x))))
-    
-    #Some models can produce NaNs. This just converts these to 0
-    maleInvestPropS[is.nan(maleInvestPropS)]<-0
-    femaleInvestPropS[is.nan(femaleInvestPropS)]<-0
-  }
-  
-  #Determine which female each male has chosen
-  #Break ties randomly
-  mchoice<-data.frame("male"=1:nrow(malesg))
-  mchoice$choice<-apply(maleInvestPropS,1,function(x) which.max(x))
-  
-  #Determine which male each female has chosen
-  #Break ties randomly
-  fchoice<-data.frame("female"=1:nrow(femalesg))
-  fchoice$choice<-apply(femaleInvestPropS,1,function(x) which.max(x))
-  
-  #Loop through females' choices
-  for(p in 1:nrow(fchoice)){
-    #Determine the male chosen by the current focal female
-    chosenmale<-fchoice$choice[p]
-    
-    #Determine the female chosen by the focal female's choice
-    chosenfemale<-mchoice$choice[chosenmale]
-    
-    #If the chosen female is the focal female...
-    if(chosenfemale==p){
-      #Pair the male and female together
-      sexGpairs<-rbind(sexGpairs,cbind(femalesg[p,],malesg[chosenmale,]))
+
+  #A vector of male agents' partners
+  mPartner<-matrix(0,nrow(malesg),1)
+
+  #A vector of female agents' partners
+  fPartner<-matrix(0,nrow(femalesg),1)
+
+  #A matrix of females have already rejected each male
+  mRejected<-matrix(0,nrow(malesg),nrow(femalesg))
+
+  #Loops as long as some male is still unpaired
+  while(sum(mPartner==0,na.rm=T)>0){
+
+    #Selects the first unpaired male
+    focalMale<-which(mPartner==0)[1]
+
+    #Pulls out his attractions
+    focalMaleAtts<-sexMaleAttMatrix[focalMale,]
+
+    #Determines which females have already rejected him
+    focalMaleRejections<-mRejected[focalMale,]
+
+    #If there is still a female left who has not rejected the focal male...
+    if(sum(focalMaleRejections)<nrow(femalesg)){
+
+      #Sets the attractiveness of each female who has rejected the focal male to 0
+      focalMaleAtts[focalMaleRejections==1]<-0
+
+      #Determines which of the remaining females he is most attracted to
+      femaleChosen<-which(focalMaleAtts==max(focalMaleAtts))[1]
+
+      #If she is single...
+      if(fPartner[femaleChosen]==0){
+        #She provisionally pairs with him
+        fPartner[femaleChosen]<-focalMale
+
+        #And he provisionally pairs with her
+        mPartner[focalMale]<-femaleChosen
+
+        #If the chosen female is not single, she compares the attractiveness of the focal male to her current partner...
+      } else if(sexFemaleAttMatrix[femaleChosen,focalMale]>sexFemaleAttMatrix[femaleChosen,fPartner[femaleChosen]]){
+        #If the focal male is more attractive to the chosen female than her current partner...
+
+        #The chosen female rejects her current partner
+        mRejected[fPartner[femaleChosen],femaleChosen]<-1
+
+        #And he becomes single
+        mPartner[fPartner[femaleChosen]]<-0
+
+        #And the focal male and the chosen female provisionally pair
+        mPartner[focalMale]<-femaleChosen
+        fPartner[femaleChosen]<-focalMale
+      } else{
+        #If the focal male is not more attractive to the chosen female than her current partner, the chosen female rejects the focal male
+        mRejected[focalMale,femaleChosen]<-1
+      }
+    } else{
+      #If there is no female who has yet to reject the male, have him abandon search
+      mPartner[focalMale]<-NA
     }
-    
-    #Otherwise do nothing
-    
+  }
+
+  mPartner<-mPartner[is.na(mPartner)==F]
+
+  #Loop through malesg' choices
+  for(p in 1:length(mPartner)){
+    #Pair each male with his chosen female
+    sexGpairs<-rbind(sexGpairs,cbind(femalesg[mPartner[p],],malesg[p,]))
   }
   
   #Remove the row of NAs from the sexGpairs dataframe
