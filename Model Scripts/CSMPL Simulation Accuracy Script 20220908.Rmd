@@ -21,7 +21,7 @@ library(doParallel)
 
 #####Population Data######
 ```{r}
-data<-read.csv("Model Outputs/Couple Populations/CSMPL Couple Population 09282022 171345.csv")
+data<-read.csv("Model Outputs/Couple Populations/CSMPL Couple Population 09302022 131500.csv")
 
 pairs<-cbind(data[data$sex==0,],data[data$sex==1,])
 
