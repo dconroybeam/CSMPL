@@ -170,7 +170,7 @@ ggarrange(accplots[[1]],accplots[[3]],accplots[[2]],accplots[[4]],ncol=4,labels=
 if(sf==1){
   sapply(1:length(models),function(x)
     ggsave(paste0("Figures/","CSMPL Accuracy Plot ",toupper(models[x]),".tiff"),accplots[[x]],width=12,height=6,
-           units="in",dpi=100)
+           units="in",dpi=300)
     )
 }
 
