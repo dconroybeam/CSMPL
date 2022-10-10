@@ -1,0 +1,177 @@
+---
+title: "CSMPL Model Analysis Script 20221010"
+author: "Dan Conroy-Beam"
+date: "2022-10-10"
+output: html_document
+---
+
+
+######Packages######
+
+```{r}
+library(ggplot2)
+library(gridExtra)
+library(reshape2)
+library(plyr)
+library(grid)
+library(gtable)
+library(Rmisc)
+library(ggpubr)
+
+```
+
+
+
+######Load Data######
+
+```{r}
+#Load in the data
+data<-read.csv("Model Outputs/Simulation Accuracy/CSMPL Simulation Accuracy Results.csv")
+
+data<-data[-1,]
+
+data$modelloop<-1:nrow(data)
+
+#Melt the data
+data<-melt(data,id.vars=c("dt","modelloop","model","n"))
+
+#Rename the files
+colnames(data)[c(3,5:6)]<-c("truemodel","model","accuracy")
+
+#Sort the data
+data<-data[order(data$truemodel,data$model,data$n,data$modelloop),]
+
+
+#Create a list of all models and all sample sizes
+#Will be handy in a moment
+models<-unique(data$truemodel)
+sizes<-sort(unique(data$n))
+
+#Save figures?
+sf<-1
+```
+
+
+
+
+
+
+######Mean Accuracy######
+
+```{r}
+
+###"Confusion Matrix"###
+#Proportion of time that each model was the best model at all sample sizes and across true models
+
+#Create a new dataframe to store all data
+accdata<-data.frame("modelloop"=min(data$modelloop):max(data$modelloop))
+
+#Store the sample size
+accdata$n<-sapply(accdata$modelloop,function(x) data$n[data$modelloop==x][1])
+
+#Store the true model for each model run
+accdata$truemodel<-sapply(accdata$modelloop,function(x) data$truemodel[data$modelloop==x][1])
+
+#Determine whether each model was actually the best model in each model run
+accdata$av<-sapply(min(accdata$modelloop):max(accdata$modelloop),simplify=T,function(x) 
+  data$accuracy[data$modelloop==x][1]==max(data$accuracy[data$modelloop==x]))
+
+accdata$sex<-sapply(min(accdata$modelloop):max(accdata$modelloop),simplify=T,function(x)
+  data$accuracy[data$modelloop==x][2]==max(data$accuracy[data$modelloop==x]))
+
+accdata$ind<-sapply(min(accdata$modelloop):max(accdata$modelloop),simplify=T,function(x)
+  data$accuracy[data$modelloop==x][3]==max(data$accuracy[data$modelloop==x]))
+
+
+#Break ties
+#Tied models share points: .5 if two models tie, .33 if three, etc.
+accdata[,4:6]<-t(apply(accdata[,4:6],1,function(x) x*(1/sum(as.numeric(x)))))
+
+#A blank dataframe to store the actual confusion matrix
+confusion<-data.frame("n"=rep(sizes,each=length(models)),"truemodel"=rep(models,times=length(sizes)))
+
+#Store the total proportion of times in which each model was the best across sample sizes and true models
+confusion$av<-as.numeric(tapply(accdata$av,list(accdata$truemodel,accdata$n),mean))
+confusion$sex<-as.numeric(tapply(accdata$sex,list(accdata$truemodel,accdata$n),mean))
+confusion$ind<-as.numeric(tapply(accdata$ind,list(accdata$truemodel,accdata$n),mean))
+
+#Melt the dataframe for easier plotting/analysis
+confusion<-melt(confusion,id.vars=c("n","truemodel"),measure.vars=models[-4])
+
+#Rename dataframes
+colnames(confusion)<-c("n","truemodel","model","p")
+
+#Relabel factor levels
+confusion$truemodel<-factor(confusion$truemodel,levels=c("av","sex","ind","upd"),labels=c("Avg.","Sex","Ind.","Upd."))
+confusion$model<-factor(confusion$model,levels=c("av","sex","ind"),labels=c("Avg.","Sex","Ind."))
+
+
+#Plotting all confusion matrices (and storing them in lists)
+confusionplots<-lapply(sizes,function(x) qplot(model,truemodel,fill=p,data=confusion[confusion$n==x,],xlab="Best Model",ylab="True Model")+
+                             geom_tile(color="white")+geom_text(label=round(confusion$p[confusion$n==x],2),size=I(6))+
+                             scale_fill_gradient(low="white",high="red")+theme_bw(base_size=20)+
+                             theme(legend.position="none",panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+                             scale_y_discrete(limits=rev(levels(confusion$truemodel))))
+
+
+if(sf==1){
+  sapply(1:length(sizes),function(x)
+    ggsave(paste0("Figures/","CSMPL Confusion Matrix N",sizes[x],".tiff"),confusionplots[[x]],width=10,height=10,
+           units="in",dpi=300)
+    )
+}
+
+```
+
+
+###Average Accuracy Plots###
+
+```{r}
+
+#Create a single dataframe to store all plotting data
+plotdata<-data.frame("n"=rep(sizes,times=length(models[-4])*length(models)),"truemodel"=rep(models,each=length(unique(data$n))*length(models[-4])),"model"=rep(models[-4],each=length(sizes),times=length(models)),"accuracy"=0,"lci"=0,"uci"=0)
+
+#Horrible, ugly line
+#Loops through true models, and then through tested models, and calculates the average accuracy as a function of sample size
+plotdata$accuracy<-as.vector(sapply(1:length(models),function(y) as.vector(sapply(1:length(models[-4]),function(x) tapply(data$accuracy[data$truemodel==models[y] & data$model==models[x]],data$n[data$truemodel==models[y] & data$model==models[x]],mean)))))
+
+
+#Another horrible, ugly line
+#Does the same thing as above, but calculates confidence interval width
+cis<-as.vector(sapply(1:length(models),function(y) as.vector(sapply(1:length(models[-4]),function(x) tapply(data$accuracy[data$truemodel==models[y] & data$model==models[x]],data$n[data$truemodel==models[y] & data$model==models[x]],function(z) sd(z)*1.96)))))
+cis<-cis/sqrt(plotdata$n)
+
+#Compute the lower and upper bounds of the confidence interval
+plotdata$lci<-plotdata$accuracy-cis
+plotdata$uci<-plotdata$accuracy+cis
+
+#Set the boundaries of this to 0 and 1
+plotdata$lci[plotdata$lci<0]<-0
+plotdata$uci[plotdata$uci>1]<-1
+
+plotdata[,4:6]<-plotdata[,4:6]*100
+
+
+
+###Mean Plots###
+
+#Plot average model accuracies across true models and sample sizes
+accplots<-lapply(models,function(x) 
+  
+  qplot(as.factor(n),accuracy,fill=model,data=plotdata[plotdata$truemodel==x,],geom="blank",xlab="Sample Size (# of Couples)",ylab="Couple Simulation Accuracy\n(% Observed Couples Reproduced)")+
+    geom_bar(stat="identity",position="dodge")+geom_errorbar(aes(ymin=plotdata$lci[plotdata$truemodel==x],ymax=plotdata$uci[plotdata$truemodel==x]),position="dodge")+
+    theme_classic(base_size=20)+scale_fill_discrete(name="",labels=toupper(models))+theme(legend.position="top")+coord_cartesian(ylim=c(0,100))
+  
+)
+
+ggarrange(accplots[[1]],accplots[[3]],accplots[[2]],accplots[[4]],ncol=4,labels=c("A","B","C","D"))
+
+
+if(sf==1){
+  sapply(1:length(models),function(x)
+    ggsave(paste0("Figures/","CSMPL Accuracy Plot ",toupper(models[x]),".tiff"),accplots[[x]],width=12,height=6,
+           units="in",dpi=300)
+    )
+}
+
+````
