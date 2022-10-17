@@ -10,7 +10,9 @@ output: html_document
 ######Packages######
 ```{r}
 library(ggplot2)
-````
+library(lmerTest)
+library(reshape2)
+```
 
 
 
@@ -386,6 +388,13 @@ males$avAcc<-ifelse(is.na(males$avGuess)==F,males$avGuess==males$CIN,F)
 males$sexAcc<-ifelse(is.na(males$sexGuess)==F,males$sexGuess==males$CIN,F)
 males$indAcc<-ifelse(is.na(males$indGuess)==F,males$indGuess==males$CIN,F)
 
+
+#Relationship quality
+data2<-rbind(females,males)
+
+r1<-lmer(scale(qmi_sat)~avAcc+(1|CIN),data=data2)
+r2<-lmer(scale(qmi_sat)~indAcc+(1|CIN),data=data2)
+
 ```
 
 
@@ -404,8 +413,23 @@ plotdata$lci<-apply(females[,466:468],2,function(x) quantile(sapply(1:10000,func
 plotdata$uci<-apply(females[,466:468],2,function(x) quantile(sapply(1:10000,function(y) mean(sample(x,replace=T))),.975))
 
 accplot<-qplot(model,acc,data=plotdata,fill=model,geom="blank",xlab="Preference Model",ylab="Simulation Accuracy")+geom_bar(stat="identity")+
-  geom_errorbar(aes(ymin=lci,ymax=uci))+theme_gray(base_size=20)+theme(axis.text.x=element_text(angle=90,hjust=1),legend.position="none")
+  geom_errorbar(aes(ymin=lci,ymax=uci))+theme_gray(base_size=25)+theme(axis.text.x=element_text(angle=90,hjust=1),legend.position="none")
+
+
+rqPlotdata<-data2[,c(3,455,466,468)]
+
+rqPlotdata<-melt(rqPlotdata,id.vars=c("PIN","qmi_sat"))
+
+rqPlot<-qplot(variable,qmi_sat,fill=value,data=rqPlotdata,xlab="Preference Model",ylab="Relationship Satisfaction (QMI)",geom="blank")+
+  scale_fill_discrete(name="Simulation\nAccuracy",labels=c("Inccurate","Accurate"))+geom_violin(position=position_dodge(.9),width=1)+
+  scale_x_discrete(labels=c("Consensual","Individual"))+
+  geom_boxplot(position=position_dodge(.9),width=.1)+
+  theme_grey(base_size=30)
 
 if(sf==1){
-  ggsave("Figures/CAREER1 Simulation Accuracy.tiff",accplot,width=12,height=6,units="in",dpi=100)
+  ggsave("Figures/CAREER1 Simulation Accuracy-s.tiff",accplot,width=6,height=6,units="in",dpi=100)
+  
+  ggsave("Figures/CAREER1 Satisfaction Plot.tiff",rqPlot,width=12,height=12,units="in",dpi=100)
 }
+
+```
